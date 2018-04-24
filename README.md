@@ -1,8 +1,10 @@
 # Dropseq
 #### Pipeline for processing Drop-seq data from FASTQ to per cell barcode gene expression
 
-This pipeline is a wrapper of the Drop-seq tools developed by James Nameth and the McCaroll 
-lab at the Harvard Medical School (http://mccarrolllab.com/dropseq). The procedure is outlined here: 
+This pipeline is meant to provide an easy interface and automation for running Drop-seq tools, Picard, and some new scripts developed here. 
+Drop-seq tools is developed by James Nameth and the McCaroll lab at the Harvard Medical School (http://mccarrolllab.com/dropseq). 
+The procedure is outlined here: 
+
 http://mccarrolllab.com/wp-content/uploads/2016/03/Drop-seqAlignmentCookbookv1.2Jan2016.pdf
 
 Usage
@@ -58,7 +60,7 @@ Installation
 2. Edit the config.txt file to set file paths. It is also possible to add a separate copy 
 of config.txt to your current directory when running dropseq which will override the global config.txt.
 3. Test dropseq to see if all dependancies are found
-```bash
+```
 dropseq test
 ```
 
