@@ -1,0 +1,9 @@
+dropseq_tools_dir: /usr/local/scratch/METAGENOMICS/jmccrow/Drop-seq_Lisa/Drop-seq_tools-1.12
+picard_path: /usr/local/packages/picard-tools-2.4.1/share/lib/picard-tools/picard.jar
+java_path: /usr/local/packages/jdk-8u121/bin/java
+star_aligner: STAR
+reference_genome_dir: /usr/local/scratch/METAGENOMICS/jmccrow/Drop-seq_Lisa/STAR
+reference_genome_fasta: /usr/local/scratch/METAGENOMICS/jmccrow/Drop-seq_Lisa/refs/T21_spades.fa
+reference_genome_gtf: /usr/local/scratch/METAGENOMICS/jmccrow/Drop-seq_Lisa/refs/T21_spades.Pt3.combined_blast.besthit.gtf
+top_dge_barcodes: 1000
+processors: 4

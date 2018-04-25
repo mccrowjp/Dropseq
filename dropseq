@@ -1,0 +1,819 @@
+#!/usr/bin/env perl
+#
+# Drop-seq pipeline - FASTQ filtering, STAR alignment, digital gene expression per cell barcode
+#
+# Version: 0.1 (4/12/2018)
+#
+# Original version: 4/12/2018 John P. McCrow (jmccrow [at] jcvi.org)
+# J. Craig Venter Institute (JCVI)
+# La Jolla, CA USA
+#
+# Dependancies:
+# 1. Perl (https://www.perl.org/get.html)
+# 2. Java 1.8+ (http://www.oracle.com/technetwork/java/javase/downloads/index.html)
+# 3. Drop-seq Tools (http://mccarrolllab.com/download/1276)
+# 4. Picard 2+ (http://broadinstitute.github.io/picard)
+# 5. STAR Aligner (https://github.com/alexdobin/STAR/releases)
+#
+use strict;
+use Getopt::Long;
+use Cwd 'abs_path';
+
+my $prog_intro = "Drop-seq pipeline v0.1 - Creaded by John P. McCrow (4/12/2018)";
+
+my $progdir = abs_path($0);
+$progdir =~ s/\/[^\/]+$//;
+
+my $toolsdir = ".";
+my $picardpath = "picard.jar";
+my $javapath = "java";
+my $starpath = "STAR";
+my $genomedir = ".";
+my $showhelp = 0;
+my $rmfiles = 0;
+my $num_barcodes = 15000;
+my $top_dge_barcodes = 1000;
+my $cpus = 4;
+my $lib;
+my $libfile;
+
+# commands
+my ($cmd_fastq2bam, $cmd_tagXC, $cmd_tagXM, $cmd_filter, $cmd_trimAdapter, $cmd_trimPolyA,
+    $cmd_bam2fastq, $cmd_starAlign, $cmd_sortSam, $cmd_merge, $cmd_tagGenes, $cmd_correctXC,
+    $cmd_histogram1, $cmd_histogram2, $cmd_dge, $cmd_cleanup);
+
+# filenames
+my ($fq1, $fq2, $initial_bam, $tagXC_bam, $tagXC_summary, $tagXM_bam, $tagXM_summary,
+    $tagXM_bam, $filtered_bam, $trimmed_bam, $trimmed_summary, $polyA_bam, $polyA_summary,
+    $polyA_fastq, $star_prefix, $aligned_sam, $aligned_bam, $merged_bam, $ge_bam, $refseq,
+    $refseq_gtf, $clean_bam, $clean_stats, $clean_summary, $readcounts,
+    $genesreadcounts, $fig_genes_reads_hist, $dge_table, $dge_summary, $makefile);
+
+# Default values in precedent order: this script, global config file, local config file, command line parameters
+read_init($progdir."/config.txt");
+read_init("config.txt");
+
+my $universal_options = <<UOPT;
+  Options:
+    --help, -h          show this help page
+    --list, -l    file  file with list of sample names
+                        runs sample number set in SGE_TASK_ID
+    --sample, -s  name  library/sample name (base filename)
+                        one of -l or -s is required
+    --rm                remove output file from previous step when finished
+UOPT
+
+my $help_main = <<HELP_MAIN;
+$prog_intro
+
+Usage: dropseq.pl [command] (options)
+
+  Commands:
+    fastq2bam     convert paired FASTQ to sorted BAM
+    tagXC         add cell barcodes to BAM, XC tag
+    tagXM         add molecular barcodes to BAM, XM tag
+    filter        filter out low quality barcode reads by XQ tag
+    trimAdapter   trim partial SMART adapter from 5'-end
+    trimPolyA     trim partial poly-A from 3'-end
+    bam2fastq     convert trimmed/filtered BAM to FASTQ for use in alignment
+    
+    starAlign     alignment to reference using STAR
+    sortSam       sort aligned SAM and convert to BAM
+    
+    merge         merge unaligned and aligned BAM files
+    tagGenes      tag exons/genes in BAM, GE tag
+    correctXC     correct bead synthesis errors
+    
+    histogram     plot cumulative read and gene distributions
+    dge           digital gene expression per cell barcode
+    cleanup       remove some intermediate files
+    
+    make          create make file to automate entire pipeline
+ 
+$universal_options
+    * See command help for command specific options
+
+HELP_MAIN
+
+my $help_fastq2bam = <<HELP_FASTQ2BAM;
+$prog_intro
+
+Usage: dropseq.pl fastq2bam (options)
+       Convert paired FASTQ to sorted BAM
+ 
+$universal_options
+
+HELP_FASTQ2BAM
+
+my $help_tagXC = <<HELP_TAGXC;
+$prog_intro
+
+Usage: dropseq.pl tagXC (options)
+       Add cell barcodes to BAM, XC tag
+ 
+$universal_options
+
+HELP_TAGXC
+
+my $help_tagXM = <<HELP_TAGXM;
+$prog_intro
+
+Usage: dropseq.pl tagXM (options)
+       Add molecular barcodes to BAM, XM tag
+ 
+$universal_options
+
+HELP_TAGXM
+
+my $help_filter = <<HELP_FILTER;
+$prog_intro
+
+Usage: dropseq.pl filter (options)
+       Filter out low quality barcode reads by XQ tag
+ 
+$universal_options
+
+HELP_FILTER
+
+my $help_trimAdapter = <<HELP_TRIMADAPTER;
+$prog_intro
+
+Usage: dropseq.pl trimAdapter (options)
+       Trim partial SMART adapter from 5'-end
+ 
+$universal_options
+
+HELP_TRIMADAPTER
+
+my $help_trimPolyA = <<HELP_TRIMPOLYA;
+$prog_intro
+
+Usage: dropseq.pl trimPolyA (options)
+       trimPolyA     trim partial poly-A from 3'-end
+ 
+$universal_options
+
+HELP_TRIMPOLYA
+
+my $help_bam2fastq = <<HELP_BAM2FASTQ;
+$prog_intro
+
+Usage: dropseq.pl bam2fastq (options)
+       Convert trimmed/filtered BAM to FASTQ for use in alignment
+ 
+$universal_options
+
+HELP_BAM2FASTQ
+
+my $help_starAlign = <<HELP_STARALIGN;
+$prog_intro
+
+Usage: dropseq.pl starAlign (options)
+       Alignment to reference using STAR
+ 
+  Options:
+    --align, -a   dir   STAR alignment reference directory
+    --cpu         int   use # CPUs, if available (default: $cpus)
+    --help, -h          show this help page
+    --sample, -s  name  library/sample name (base filename)
+                        one of -l or -s is required
+    --list, -l    file  file with list of sample names
+                        runs sample number set in SGE_TASK_ID
+    --rm                remove output file from previous step when finished
+
+HELP_STARALIGN
+
+my $help_sortSam = <<HELP_SORTSAM;
+$prog_intro
+
+Usage: dropseq.pl sortSam (options)
+       Sort aligned SAM and convert to BAM
+ 
+$universal_options
+
+HELP_SORTSAM
+
+my $help_merge = <<HELP_MERGE;
+$prog_intro
+
+Usage: dropseq.pl merge (options)
+       Merge unaligned and aligned BAM files
+ 
+  Options:
+    --help, -h          show this help page
+    --sample, -s  name  library/sample name (base filename)
+                        one of -l or -s is required
+    --list, -l    file  file with list of sample names
+                        runs sample number set in SGE_TASK_ID
+    --ref         file  reference genome FASTA (required)
+    --rm                remove output file from previous step when finished
+
+HELP_MERGE
+
+my $help_tagGenes = <<HELP_GENES;
+$prog_intro
+
+Usage: dropseq.pl tagGenes (options)
+       Tag exons/genes in BAM, GE tag
+
+  Options:
+    --help, -h          show this help page
+    --sample, -s  name  library/sample name (base filename)
+                        one of -l or -s is required
+    --list, -l    file  file with list of sample names
+                        runs sample number set in SGE_TASK_ID
+    --gtf         file  reference genes GTF file (required) 
+    --rm                remove output file from previous step when finished
+
+HELP_GENES
+
+my $help_correctXC = <<HELP_CORRECTXC;
+$prog_intro
+
+Usage: dropseq.pl correctXC (options)
+       Correct bead synthesis errors
+ 
+$universal_options
+
+HELP_CORRECTXC
+
+my $help_histogram = <<HELP_HISTOGRAM;
+$prog_intro
+
+Usage: dropseq.pl histogram (options)
+       Plot cumulative read and gene distributions
+ 
+$universal_options
+
+HELP_HISTOGRAM
+
+my $help_dge = <<HELP_DGE;
+$prog_intro
+
+Usage: dropseq.pl dge (options)
+       Digital gene expression per cell barcode
+ 
+  Options:
+    --help, -h          show this help page
+    --sample, -s  name  library/sample name (base filename)
+                        one of -l or -s is required
+    --list, -l    file  file with list of sample names
+                        runs sample number set in SGE_TASK_ID
+    --rm                remove output file from previous step when finished
+    --top, -t     int   top barcodes to report expression (default: $top_dge_barcodes)
+
+HELP_DGE
+
+my $help_cleanup = <<HELP_CLEANUP;
+$prog_intro
+
+Usage: dropseq.pl cleanup (options)
+       Remove some intermediate files
+ 
+  Options:
+    --help, -h          show this help page
+    --list, -l    file  file with list of sample names
+                        runs sample number set in SGE_TASK_ID
+    --sample, -s  name  library/sample name (base filename)
+                        one of -l or -s is required
+
+HELP_CLEANUP
+
+my $help_make = <<HELP_MAKE;
+$prog_intro
+
+Usage: dropseq.pl make (options)
+       Create make file to automate entire pipeline
+ 
+  Options:
+    --align, -a   dir   STAR alignment reference directory
+    --cpu         int   use # CPUs, if available (default: $cpus)
+    --help, -h          show this help page
+    --list, -l    file  file with list of sample names
+                        creates separate make files for each sample
+    --sample, -s  name  library/sample name (base filename)
+                        one of -l or -s is required
+    --ref         file  reference genome FASTA (required)
+    --gtf         file  reference genes GTF file (required)
+    --top, -t     int   top barcodes to report expression (default: $top_dge_barcodes)
+    
+HELP_MAKE
+
+sub cmd {
+    return join(" ", @_);
+}
+
+sub runcmd {
+    my $run = join(" ", @_);
+    print STDERR $run."\n";
+    my $rc = system($run);
+    unless($rc == 0) {
+	    die "Error: $rc\n";
+    }
+}
+
+sub rmfile {
+    my $file = shift;
+    if($rmfiles) {
+        print STDERR "removing: $file\n";
+        system("rm $file");
+    }
+}
+
+sub fastq2bam {
+    if(-e $fq1 && -e $fq2) {
+        runcmd($cmd_fastq2bam);
+    } else {
+        die "Files not found: $fq1, $fq1\n";
+    }
+}
+
+sub tagXC {
+    if(-e $initial_bam) {
+        runcmd($cmd_tagXC);
+        if(-e $tagXC_bam) {
+            rmfile($initial_bam);
+        }
+    } else {
+        die "File not found: $initial_bam\n";
+    }
+}
+
+sub tagXM {
+    if(-e $tagXC_bam) {
+    	runcmd($cmd_tagXM);
+	    if(-e $tagXM_bam) {
+            rmfile($tagXC_bam);
+        }
+    } else {
+        die "File not found: $tagXC_bam\n";
+    }
+}
+
+sub filter {
+    if(-e $tagXM_bam) {
+        runcmd($cmd_filter);
+        if(-e $filtered_bam) {
+            rmfile($tagXM_bam);	
+        }
+    } else {
+        die "File not found: $tagXM_bam\n";
+    }
+}
+
+sub trimAdapter {
+    if(-e $filtered_bam) {
+        runcmd($cmd_trimAdapter);
+        if(-e $trimmed_bam) {
+            rmfile($filtered_bam);	
+        }
+    } else {
+        die "File not found: $filtered_bam\n";
+    }
+}
+
+sub trimPolyA {
+    if(-e $trimmed_bam) {
+        runcmd($cmd_trimPolyA);
+        if(-e $polyA_bam) {
+            rmfile($trimmed_bam);	
+        }
+    } else {
+        die "File not found: $trimmed_bam\n";
+    }
+}
+
+sub bam2fastq {
+    if(-e $polyA_bam) {
+        runcmd($cmd_bam2fastq);
+    } else {
+        die "File not found: $polyA_bam\n";
+    }
+}
+
+sub starAlign {
+    if(-e $polyA_fastq) {
+        runcmd($cmd_starAlign);
+    } else {
+        die "File not found: $polyA_fastq\n";
+    }
+}
+
+sub sortSam {
+    if(-e $aligned_sam) {
+        runcmd($cmd_sortSam);
+        if(-e $aligned_bam) {        
+            rmfile($aligned_sam);
+        }
+    } else {
+        die "File not found: $aligned_sam\n";
+    }
+}    
+
+sub merge {
+    if($refseq) {
+        if(-e $refseq && -e $polyA_bam && -e $aligned_bam) {
+            runcmd($cmd_merge);
+        } else {
+            die "Files not found: $refseq, $polyA_bam, $aligned_bam\n";
+        }
+        
+    } else {
+        die "Reference FASTA required, use --ref\n".$help_merge;
+    }
+}
+
+sub tagGenes {
+    if(-e $merged_bam) {
+        runcmd($cmd_tagGenes);
+        if(-e $ge_bam) {
+            rmfile($merged_bam);
+        }
+    }  else {
+        die "File not found: $merged_bam\n";
+    }
+}
+
+sub correctXC {
+    if(-e $ge_bam) {
+        runcmd($cmd_correctXC);
+        if(-e $clean_bam) {
+            rmfile($ge_bam);
+        }
+    } else {
+        die "File not found: $ge_bam\n";
+    }
+}
+
+sub histogram {
+    if(-e $clean_bam) {
+#        runcmd($toolsdir."/BAMTagHistogram", "I=".$clean_bam, "O=".$readcounts, "TAG=XC");
+        runcmd($cmd_histogram1);
+        runcmd($cmd_histogram2);
+    } else {
+        die "File not found: $clean_bam\n";
+    }
+}
+
+sub dge {
+    if(-e $clean_bam) {
+        runcmd($cmd_dge);
+    } else {
+        die "File not found: $clean_bam\n";
+    }
+}
+
+sub cleanup {
+    $rmfiles = 1;
+    if(-e $tagXC_bam) {
+        rmfile($initial_bam);
+    }
+    if(-e $tagXM_bam) {
+        rmfile($tagXC_bam);
+    }
+    if(-e $filtered_bam) {
+        rmfile($tagXM_bam);	
+    }
+    if(-e $trimmed_bam) {
+        rmfile($filtered_bam);	
+    }
+    if(-e $polyA_bam) {
+        rmfile($trimmed_bam);	
+    }
+    if(-e $aligned_bam) {        
+        rmfile($aligned_sam);
+    }
+    if(-e $ge_bam) {
+        rmfile($merged_bam);
+    }
+    if(-e $clean_bam) {
+        rmfile($ge_bam);
+    }
+}
+
+sub read_init {
+    my $file = shift;
+    if(-e $file) {
+        if(open(IN, $file)) {
+            while(<IN>) {
+                chomp;
+                unless(/^\#/) {
+                    if(/^(\S+):\s+(.+)$/) {
+                        my ($param, $value) = ($1, $2);
+                        if($param =~ /dropseq_tools_dir/i) {
+                            $toolsdir = $value;
+                        } elsif($param =~ /java_path/i) {
+                            $javapath = $value;
+                        } elsif($param =~ /picard_path/i) {
+                            $picardpath = $value;
+                        }  elsif($param =~ /star_aligner/i) {
+                            $starpath = $value;
+                        }  elsif($param =~ /reference_genome_dir/i) {
+                            $genomedir = $value;
+                        }  elsif($param =~ /reference_genome_fasta/i) {
+                            $refseq = $value;
+                        }  elsif($param =~ /reference_genome_gtf/i) {
+                            $refseq_gtf = $value;
+                        }  elsif($param =~ /top_dge_barcodes/i) {
+                            $top_dge_barcodes = $value;
+                        }  elsif($param =~ /processors/i) {
+                            $cpus = $value;
+                        }
+                    }
+                }
+            }
+            close(IN);
+        }
+    }
+}
+
+sub make_rule {
+    my ($target, $depend, @execlist) = @_;
+    my $rule = $target." : ".$depend."\n";
+    foreach my $exec (@execlist) {
+        $rule .= "\t".$exec."\n";
+    }
+    return $rule."\n";
+}
+
+sub make {
+    if($lib && $refseq && $refseq_gtf) {
+        open(OUT, ">".$makefile) or die "Unable to write to file $makefile\n";
+        print OUT make_rule($dge_table, $clean_bam, $cmd_dge, $cmd_histogram1, $cmd_histogram2);
+        print OUT make_rule($clean_bam, $ge_bam, $cmd_correctXC);
+        print OUT make_rule($ge_bam, $merged_bam, $cmd_tagGenes);
+        print OUT make_rule($merged_bam, "$refseq $polyA_bam $aligned_bam", $cmd_merge);
+        print OUT make_rule($aligned_bam, $aligned_sam, $cmd_sortSam);
+        print OUT make_rule($aligned_sam, $polyA_fastq, $cmd_starAlign);
+        print OUT make_rule($polyA_fastq, $polyA_bam, $cmd_bam2fastq);
+        print OUT make_rule($polyA_bam, $trimmed_bam, $cmd_trimPolyA);
+        print OUT make_rule($trimmed_bam, $filtered_bam, $cmd_trimAdapter);
+        print OUT make_rule($filtered_bam, $tagXM_bam, $cmd_filter);
+        print OUT make_rule($tagXM_bam, $tagXC_bam, $cmd_tagXM);
+        print OUT make_rule($tagXC_bam, $initial_bam, $cmd_tagXC);
+        print OUT make_rule($initial_bam, "$fq1 $fq2", $cmd_fastq2bam);
+        print OUT make_rule("clean", "", cmd("rm", $ge_bam, $merged_bam, $aligned_sam, $trimmed_bam, 
+                                             $filtered_bam, $tagXM_bam, $tagXC_bam, $initial_bam));
+        close(OUT);
+        
+    } else {
+        die "Reference FASTA required, use --ref\n\n".$help_make;
+    }
+}
+
+sub test {
+    my $error_count = 0;
+    
+    # Java
+    if(open(IN, "$javapath -version 2>&1 |")) {
+        my $test_java = <IN>;
+        if($test_java =~ /java version \"(\d+\.\d+)[^\"]+\"/) {
+            if($1 >= 1.8) {
+                print STDERR "[test java]: passed\n";
+            } else {
+                print STDERR "[test java]: failed, java version $1 must be at least 1.8\n";
+                $error_count++;
+            }
+        } else {
+            print STDERR "[test java]: failed\n";
+            $error_count++;
+        }
+        close(IN);
+    } else {
+        print STDERR "[test java]: failed\n";
+        $error_count++;
+    }
+    
+    # Picard
+    foreach my $picard_cmd ("FastqToSam", "SamToFastq", "SortSam", "MergeBamAlignment") {
+        if(open(IN, "$javapath -jar $picardpath $picard_cmd -h 2>&1 |")) {
+            my $test_picard_cmd = <IN>;
+            if($test_picard_cmd =~ /^USAGE: $picard_cmd/) {
+                print STDERR "[test picard $picard_cmd]: passed\n";
+            } else {
+                print STDERR "[test picard $picard_cmd]: failed\n";
+                $error_count++;
+            }
+        } else {
+            print STDERR "[test picard $picard_cmd]: failed\n";
+            $error_count++;
+        }
+    }
+
+    # STAR
+    if(open(IN, "$starpath --runMode none 2>&1 |")) {
+        my $test_star = <IN>;
+        if($test_star =~ /Started STAR run/) {
+            print STDERR "[test star]: passed\n";
+        } else {
+            print STDERR "[test star]: failed\n";
+            $error_count++;
+        }
+    } else {
+        print STDERR "[test star]: failed\n";
+        $error_count++;
+    }
+    
+    # Drop-seq tools
+    foreach my $dst_cmd ("TagBamWithReadSequenceExtended", "FilterBAM", "TrimStartingSequence", "PolyATrimmer", "TagReadWithGeneExon", "DetectBeadSynthesisErrors", "DigitalExpression") {
+        if(open(IN, $toolsdir."/".$dst_cmd." 2>&1 |")) {
+            my $test_dst = <IN>;
+            if($test_dst =~ /ERROR: Option/) {
+                print STDERR "[test dropseq $dst_cmd]: passed\n";
+            } else {
+                print STDERR "[test dropseq $dst_cmd]: failed\n";
+                $error_count++;
+            }
+        } else {
+            print STDERR "[test dropseq $dst_cmd]: failed\n";
+            $error_count++;
+        }
+    }
+    
+    # scripts
+    if(-e $progdir."/get_bam_trans_reads_counts.pl" && -e $progdir."/plot_trans_reads_counts.r") {
+        print STDERR "[test scripts]: passed\n";
+    } else {
+        print STDERR "[test scripts]: failed\n";
+        $error_count++;
+    }
+
+    return $error_count;    
+}
+
+###
+
+my $command = shift;
+
+GetOptions ("top=i" => \$top_dge_barcodes,
+            "help" => \$showhelp,
+            "sample=s" => \$lib,
+            "list=s" => \$libfile,
+            "align=s" => \$genomedir,
+            "ref=s" => \$refseq,
+            "gtf=s" => \$refseq_gtf,
+            "rm" => \$rmfiles,
+            "cpu=i" => \$cpus);
+
+if($command eq '-h' || $command eq '--help') {
+    $showhelp = 1;
+}
+if($command =~ /^test/i) {
+    my $errors = test();
+    die "[test all]: ".($errors > 0 ? "failed, $errors errors" : "all tests passed")."\n";
+}
+    
+my $command_help = $help_main;
+if($command =~ /^fastq2bam/i) {
+    $command_help = $help_fastq2bam;
+} elsif($command =~ /^tagxc/i) {
+    $command_help = $help_tagXC;
+} elsif($command =~ /^tagxm/i) {
+    $command_help = $help_tagXM;
+} elsif($command =~ /^filter/i) {
+    $command_help = $help_filter;
+} elsif($command =~ /^trimadapter/i) {
+    $command_help = $help_trimAdapter;
+} elsif($command =~ /^trimpolya/i) {
+    $command_help = $help_trimPolyA;
+} elsif($command =~ /^bam2fastq/i) {
+    $command_help = $help_bam2fastq;
+} elsif($command =~ /^staralign/i) {
+    $command_help = $help_starAlign;
+} elsif($command =~ /^sortsam/i) {
+    $command_help = $help_sortSam;
+} elsif($command =~ /^merge/i) {
+    $command_help = $help_merge;
+} elsif($command =~ /^taggenes/i) {
+    $command_help = $help_tagGenes;
+} elsif($command =~ /^correctxc/i) {
+    $command_help = $help_correctXC;
+} elsif($command =~ /^histogram/i) {
+    $command_help = $help_histogram;
+} elsif($command =~ /^dge/i) {
+    $command_help = $help_dge;
+} elsif($command =~ /^cleanup/i) {
+    $command_help = $help_cleanup;
+} elsif($command =~ /^make/i) {
+    $command_help = $help_make;
+} elsif($command =~ /^-/) {
+    print STDERR "First parameter must be a command\n\n";
+    die $help_main;
+} else {
+    if(length($command) > 0) {
+        print STDERR "Command not recognized: $command\n\n";
+    }
+    die $help_main;
+}
+
+if($showhelp) {
+    die $command_help;
+}
+
+# Used for running as a SGE array job
+if($libfile) {
+    my $idnum = $ENV{"SGE_TASK_ID"};
+
+    my %alllibs = ();
+    open(IN, $libfile) or die "Unable to open file $libfile\n";
+    while(<IN>) {
+        chomp;
+        my ($id) = split(/\s+/);
+        $alllibs{$id} = 1;
+    }
+    close(IN);
+
+    my @liblist = sort keys %alllibs;
+
+    if($idnum > 0 && $idnum <= scalar(@liblist)) {
+        $lib = $liblist[$idnum-1];
+        
+    } else {
+        print STDERR join("\n", (@liblist))."\n";
+        die "Libs: ".scalar(@liblist)."\n";
+    }
+}
+
+if($lib) {
+    $fq1 = $lib."_R1.fastq.gz";
+    $fq2 = $lib."_R2.fastq.gz";
+    $initial_bam = $lib.".bam";
+    $tagXC_bam = $lib.".tagged_Cell.bam";
+    $tagXM_bam = $lib.".tagged_CellMolecular.bam";
+    $tagXM_summary = $lib.".tagged_Molecular.bam_summary.txt";
+    $tagXM_bam = $lib.".tagged_CellMolecular.bam";
+    $filtered_bam = $lib.".tagged_filtered.bam";
+    $trimmed_bam = $lib.".tagged_trim_smart.bam";
+    $trimmed_summary = $lib.".adapter_trimming_report.txt";
+    $polyA_bam = $lib.".mc_tagged_polyA_filtered.bam";
+    $polyA_summary = $lib.".polyA_trimming_report.txt";
+    $polyA_fastq = $lib.".mc_tagged_polyA_filtered.fastq";
+    $star_prefix = "star.".$lib.".";
+    $aligned_sam = $star_prefix."Aligned.out.sam";
+    $aligned_bam = $star_prefix."Aligned.out.bam";
+    $merged_bam = $lib.".merged.bam";
+    $ge_bam = $lib.".gene_exon_tagged.bam";
+    $clean_bam = $lib.".clean.bam";
+    $clean_stats = $lib.".synthesis_stats.txt";
+    $clean_summary = $lib.".synthesis_stats.summary.txt";
+    $readcounts = $lib.".cell_readcounts.txt";
+    $genesreadcounts = $lib.".trans_reads_counts.txt";
+    $fig_genes_reads_hist = $lib.".trans_reads_counts.pdf";
+    $dge_table = $lib.".dge".$top_dge_barcodes.".txt";
+    $dge_summary = $lib.".dge".$top_dge_barcodes.".summary.txt";
+    $makefile = "Makefile_".$lib.".mk";
+    
+    $cmd_fastq2bam = cmd($javapath, "-Xmx4g -jar", $picardpath, "FastqToSam", "F1=".$fq1, "F2=".$fq2, "O=".$initial_bam, "SM=".$lib);
+    $cmd_tagXC = cmd($toolsdir."/TagBamWithReadSequenceExtended", "INPUT=".$initial_bam, "OUTPUT=".$tagXC_bam, "SUMMARY=".$tagXC_summary, "BASE_RANGE=1-12", "BASE_QUALITY=10", "BARCODED_READ=1", "DISCARD_READ=False", "TAG_NAME=XC", "NUM_BASES_BELOW_QUALITY=1");
+    $cmd_tagXM = cmd($toolsdir."/TagBamWithReadSequenceExtended", "INPUT=".$tagXC_bam, "OUTPUT=".$tagXM_bam, "SUMMARY=".$tagXM_summary, "BASE_RANGE=13-20", "BASE_QUALITY=10", "BARCODED_READ=1", "DISCARD_READ=True", "TAG_NAME=XM", "NUM_BASES_BELOW_QUALITY=1");
+    $cmd_filter = cmd($toolsdir."/FilterBAM", "TAG_REJECT=XQ", "INPUT=".$tagXM_bam, "OUTPUT=".$filtered_bam);
+    $cmd_trimAdapter = cmd($toolsdir."/TrimStartingSequence", "INPUT=".$filtered_bam, "OUTPUT=".$trimmed_bam, "OUTPUT_SUMMARY=".$trimmed_summary, "SEQUENCE=AAGCAGTGGTATCAACGCAGAGTGAATGGG", "MISMATCHES=0", "NUM_BASES=5");
+    $cmd_trimPolyA = cmd($toolsdir."/PolyATrimmer INPUT=".$trimmed_bam, "OUTPUT=".$polyA_bam, "OUTPUT_SUMMARY=".$polyA_summary, "MISMATCHES=0", "NUM_BASES=6");
+    $cmd_bam2fastq = cmd($javapath, "-Xmx4g -jar", $picardpath, "SamToFastq", "INPUT=".$polyA_bam, "FASTQ=".$polyA_fastq);
+    $cmd_starAlign = cmd($starpath, "--genomeDir", $genomedir, "--runThreadN", $cpus, "--readFilesIn", $polyA_fastq, "--readFilesCommand zcat", "--outFileNamePrefix", $star_prefix);
+    $cmd_sortSam = cmd($javapath, "-Xmx4g -jar", $picardpath, "SortSam", "I=".$aligned_sam, "O=".$aligned_bam, "SO=queryname");
+    $cmd_merge = cmd($javapath, "-Xmx4g -jar", $picardpath, "MergeBamAlignment", "REFERENCE_SEQUENCE=".$refseq, "UNMAPPED_BAM=".$polyA_bam, "ALIGNED_BAM=".$aligned_bam, "OUTPUT=".$merged_bam, "INCLUDE_SECONDARY_ALIGNMENTS=false", "PAIRED_RUN=false");
+    $cmd_tagGenes = cmd($toolsdir."/TagReadWithGeneExon", "I=".$merged_bam, "O=".$ge_bam, "ANNOTATIONS_FILE=".$refseq_gtf, "TAG=GE");
+    $cmd_correctXC = cmd($toolsdir."/DetectBeadSynthesisErrors", "I=".$ge_bam, "O=".$clean_bam, "OUTPUT_STATS=".$clean_stats, "SUMMARY=".$clean_summary, "NUM_BARCODES=".($num_barcodes*2), "PRIMER_SEQUENCE=AAGCAGTGGTATCAACGCAGAGTAC");
+    $cmd_histogram1 = cmd($progdir."/get_bam_trans_reads_counts.pl", $clean_bam, ">", $genesreadcounts);
+    $cmd_histogram2 = cmd($progdir."/plot_trans_reads_counts.r", $genesreadcounts, $fig_genes_reads_hist);
+    $cmd_dge = cmd($toolsdir."/DigitalExpression", "I=".$clean_bam, "O=".$dge_table, "SUMMARY=".$dge_summary, "NUM_CORE_BARCODES=".$top_dge_barcodes);
+
+    if($command =~ /^fastq2bam/i) {
+        fastq2bam();
+    } elsif($command =~ /^tagxc/i) {
+        tagXC();
+    } elsif($command =~ /^tagxm/i) {
+        tagXM();
+    } elsif($command =~ /^filter/i) {
+        filter();
+    } elsif($command =~ /^trimadapter/i) {
+        trimAdapter();
+    } elsif($command =~ /^trimpolya/i) {
+        trimPolyA();
+    } elsif($command =~ /^bam2fastq/i) {
+        bam2fastq();
+    } elsif($command =~ /^staralign/i) {
+        starAlign();
+    } elsif($command =~ /^sortsam/i) {
+        sortSam();
+    } elsif($command =~ /^merge/i) {
+        merge();
+    } elsif($command =~ /^taggenes/i) {
+        tagGenes();
+    } elsif($command =~ /^correctxc/i) {
+        correctXC();
+    } elsif($command =~ /^histogram/i) {
+        histogram();
+    } elsif($command =~ /^dge/i) {
+        dge();
+    } elsif($command =~ /^cleanup/i) {
+        cleanup();
+    } elsif($command =~ /^make/i) {
+        make();
+    }
+
+} else {
+    print STDERR "No library/sample specified. Use -s or -l\n\n";
+    die $command_help;
+}

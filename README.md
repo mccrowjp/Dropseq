@@ -3,9 +3,7 @@
 
 This pipeline is meant to provide an easy interface and automation for running Drop-seq tools, Picard, and some new scripts developed here. 
 Drop-seq tools is developed by James Nameth and the McCaroll lab at the Harvard Medical School (http://mccarrolllab.com/dropseq). 
-The procedure is outlined here: 
-
-http://mccarrolllab.com/wp-content/uploads/2016/03/Drop-seqAlignmentCookbookv1.2Jan2016.pdf
+The procedure is outlined here: http://mccarrolllab.com/wp-content/uploads/2016/03/Drop-seqAlignmentCookbookv1.2Jan2016.pdf
 
 Usage
 -----
@@ -20,7 +18,7 @@ Usage
 ```
 Drop-seq pipeline v0.1 - Creaded by John P. McCrow (4/12/2018)
 
-Usage: dropseq.pl [command] (options)
+Usage: dropseq [command] (options)
 
   Commands:
     fastq2bam     convert paired FASTQ to sorted BAM
@@ -41,6 +39,8 @@ Usage: dropseq.pl [command] (options)
     histogram     plot cumulative read and gene distributions
     dge           digital gene expression per cell barcode
     cleanup       remove some intermediate files
+    
+    make          create make file to automate entire pipeline
  
   Options:
     --help, -h          show this help page
@@ -68,7 +68,7 @@ Dependencies
 ------------
 
 * Perl (https://www.perl.org/get.html)
-* Java 8+ (http://www.oracle.com/technetwork/java/javase/downloads/index.html)
+* Java 1.8+ (http://www.oracle.com/technetwork/java/javase/downloads/index.html)
 * Drop-seq Tools (http://mccarrolllab.com/download/1276)
 * Picard 2+ (http://broadinstitute.github.io/picard)
 * STAR Aligner (https://github.com/alexdobin/STAR/releases)
