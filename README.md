@@ -2,7 +2,7 @@
 #### Pipeline for processing Drop-seq data from FASTQ to per cell barcode gene expression
 
 This pipeline is meant to provide an easy interface and automation for running Drop-seq tools, Picard, and some new scripts developed here. 
-Drop-seq tools is developed by James Nameth and the McCaroll lab at the Harvard Medical School (http://mccarrolllab.com/dropseq). 
+Drop-seq tools is developed by James Nemesh and the McCarroll lab at the Harvard Medical School (http://mccarrolllab.com/dropseq). 
 The procedure is outlined here: http://mccarrolllab.com/wp-content/uploads/2016/03/Drop-seqAlignmentCookbookv1.2Jan2016.pdf
 
 Usage
